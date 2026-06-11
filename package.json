@@ -1,22 +1,10 @@
 {
-  "name": "kcode-cli",
-  "version": "0.3.0",
-  "description": "A secure, extensible CLI AI coding assistant powered by OpenRouter, featuring interactive safety approvals, persistent project memory, and custom skill support.",
+  "name": "kcode",
+  "version": "0.3.1",
+  "description": "CLI Agent para coding usando OpenRouter",
   "main": "kcode.js",
-  "bin": {
-    "kcode": "./kcode.js"
-  },
+  "bin": { "kcode": "./kcode.js" },
   "type": "module",
-  "author": "Kleber Karpov <karpovls@gmail.com>",
-  "license": "MIT",
-  "keywords": [
-    "cli",
-    "ai",
-    "coding-assistant",
-    "openrouter",
-    "developer-tools",
-    "llm"
-  ],
   "scripts": {
     "start": "node kcode.js"
   },
@@ -25,11 +13,5 @@
     "glob": "^11.0.0",
     "ssh2": "^1.16.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/karpov/kcode.git"
-  }
+  "engines": { "node": ">=18" }
 }

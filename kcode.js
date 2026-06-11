@@ -10,12 +10,34 @@ import { runAgent, executeTool } from './src/agent.js';
 import { loadSkills, skillSystemPrompt } from './src/skills.js';
 
 async function fetchOpenRouterModels() {
+  if (process.env.OPENROUTER_API_KEY === 'mock' || process.env.KCODE_SIMULATE === 'true') {
+    return [
+      { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku', context_length: 200000, pricing: { prompt: '0.000001', completion: '0.000005' } },
+      { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' } },
+      { id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash Exp (Free)', context_length: 1048576, pricing: { prompt: '0', completion: '0' } },
+      { id: 'qwen/qwen-turbo:free', name: 'Qwen Turbo (Free)', context_length: 32768, pricing: { prompt: '0', completion: '0' } }
+    ];
+  }
   return new Promise((resolve, reject) => {
-    https.get("https://openrouter.ai/api/v1/models", (res) => {
+    const options = {
+      headers: {
+        'User-Agent': 'kcode-cli/0.3.1'
+      }
+    };
+    https.get("https://openrouter.ai/api/v1/models", options, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
-        try { resolve(JSON.parse(data).data); }
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode !== 200) {
+            reject(new Error(parsed.error?.message || `HTTP ${res.statusCode}`));
+          } else if (!parsed || !Array.isArray(parsed.data)) {
+            reject(new Error("Resposta inválida do OpenRouter (campo 'data' ausente ou inválido)"));
+          } else {
+            resolve(parsed.data);
+          }
+        }
         catch (e) { reject(e); }
       });
     }).on("error", reject);
@@ -23,6 +45,17 @@ async function fetchOpenRouterModels() {
 }
 
 async function fetchOpenRouterAuth(apiKey) {
+  if (apiKey === 'mock' || process.env.KCODE_SIMULATE === 'true') {
+    return {
+      label: 'Simulated Test Key',
+      usage: 1.2345,
+      usage_daily: 0.5,
+      usage_weekly: 1.0,
+      usage_monthly: 1.2345,
+      limit: 10.0,
+      is_free_tier: false
+    };
+  }
   return new Promise((resolve, reject) => {
     const options = {
       hostname: 'openrouter.ai',
@@ -30,14 +63,24 @@ async function fetchOpenRouterAuth(apiKey) {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'User-Agent': 'kcode-cli/0.3.1'
       }
     };
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
-        try { resolve(JSON.parse(data).data); }
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode !== 200) {
+            reject(new Error(parsed.error?.message || `HTTP ${res.statusCode}`));
+          } else if (!parsed || !parsed.data) {
+            reject(new Error("Invalid OpenRouter response (missing 'data' field)"));
+          } else {
+            resolve(parsed.data);
+          }
+        }
         catch (e) { reject(e); }
       });
     });
@@ -47,6 +90,12 @@ async function fetchOpenRouterAuth(apiKey) {
 }
 
 async function fetchOpenRouterCredits(apiKey) {
+  if (apiKey === 'mock' || process.env.KCODE_SIMULATE === 'true') {
+    return {
+      total_credits: 10.0,
+      total_usage: 1.2345
+    };
+  }
   return new Promise((resolve, reject) => {
     const options = {
       hostname: 'openrouter.ai',
@@ -54,14 +103,24 @@ async function fetchOpenRouterCredits(apiKey) {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'User-Agent': 'kcode-cli/0.3.1'
       }
     };
     const req = https.request(options, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
-        try { resolve(JSON.parse(data).data); }
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode !== 200) {
+            reject(new Error(parsed.error?.message || `HTTP ${res.statusCode}`));
+          } else if (!parsed || !parsed.data) {
+            reject(new Error("Invalid OpenRouter response (missing 'data' field from /credits)"));
+          } else {
+            resolve(parsed.data);
+          }
+        }
         catch (e) { reject(e); }
       });
     });
@@ -81,19 +140,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const API_KEY = process.env.OPENROUTER_API_KEY;
-
-if (!API_KEY) {
-  console.log('\n' + p('red', '  ⚠️ ERROR: OPENROUTER_API_KEY not found.'));
-  console.log(p('d', '  KCode needs an API key to communicate with the AI.\n'));
-  console.log(p('c', '  ✅ How to fix in 30 seconds:'));
-  console.log(p('d', '  1. Get your free key at: https://openrouter.ai/keys'));
-  console.log(p('d', '  2. Copy your key and run this command in the terminal:'));
-  console.log(p('g', '     echo "OPENROUTER_API_KEY=your_key_here" >> .env'));
-  console.log(p('d', '  3. Type "kcode" again to start.\n'));
-  process.exit(1);
-}
+const SIMULATE = process.env.KCODE_SIMULATE === 'true';
+if (!API_KEY && !SIMULATE) { console.error('\n OPENROUTER_API_KEY nao definida no .env\n'); process.exit(1); }
 
 const MODELS = {
   default: process.env.KCODE_MODEL || 'anthropic/claude-3.5-haiku',
@@ -104,11 +154,9 @@ const MODELS = {
 const HIST = path.join(os.homedir(), '.kcode', 'history');
 fs.mkdirSync(HIST, { recursive: true });
 
-let model = MODELS.default, messages = [], activeSkill = null, lastModelList = [];
-let isPasting = false;
-let pasteBuffer = [];
+let model = MODELS.default, messages = [], activeSkill = null;
 
-// ── Interactive selector ──────────────────────────────────────────────────
+// ── Interactive selector ──────────────────────────────────────────────────────
 const CATEGORIES = [
   { label: '★ FREE  — Modelos gratuitos', value: 'FREE' },
   { label: '① Text  — Modelos de texto',   value: 'Text' },
@@ -122,7 +170,7 @@ const CATEGORIES = [
 ];
 
 function renderSelector(title, items, cursor, startIdx = 0, pageSize = 12) {
-  process.stdout.write('\x1b[2J\x1b[H');
+  process.stdout.write('\x1b[2J\x1b[H'); // clear
   console.log('\n  ' + p('c', title));
   console.log('  ' + p('d', '↑/↓ para navegar · Enter para confirmar · Esc para cancelar') + '\n');
   const end = Math.min(startIdx + pageSize, items.length);
@@ -143,7 +191,9 @@ async function interactiveSelect(title, items, pageSize = 12) {
     rl.pause();
     const stdin = process.stdin;
     const prevRaw = stdin.isRaw;
-    stdin.setRawMode(true);
+    if (typeof stdin.setRawMode === 'function') {
+      stdin.setRawMode(true);
+    }
     stdin.resume();
 
     const redraw = () => renderSelector(title, items, cursor, startIdx, pageSize);
@@ -151,21 +201,25 @@ async function interactiveSelect(title, items, pageSize = 12) {
 
     const onKey = (buf) => {
       const key = buf.toString();
-      if (key === '\x1b[A' || key === '\x1b[D') {
+      if (key === '\x03') { // Ctrl+C
+        cleanup();
+        process.exit(0);
+      }
+      if (key === '\x1b[A' || key === '\x1b[D') { // up / left
         if (cursor > 0) { cursor--; if (cursor < startIdx) startIdx = cursor; }
-      } else if (key === '\x1b[B' || key === '\x1b[C') {
+      } else if (key === '\x1b[B' || key === '\x1b[C') { // down / right
         if (cursor < items.length - 1) { cursor++; if (cursor >= startIdx + pageSize) startIdx++; }
-      } else if (key === '\x1b[5~') {
+      } else if (key === '\x1b[5~') { // PgUp
         cursor = Math.max(0, cursor - pageSize);
         startIdx = Math.max(0, startIdx - pageSize);
-      } else if (key === '\x1b[6~') {
+      } else if (key === '\x1b[6~') { // PgDn
         cursor = Math.min(items.length - 1, cursor + pageSize);
         startIdx = Math.min(Math.max(0, items.length - pageSize), startIdx + pageSize);
-      } else if (key === '\r' || key === '\n') {
+      } else if (key === '\r' || key === '\n') { // Enter
         cleanup();
         resolve(items[cursor]);
         return;
-      } else if (key === '\x1b' || key === 'q') {
+      } else if (key === '\x1b' || key === 'q') { // Esc / q
         cleanup();
         resolve(null);
         return;
@@ -175,14 +229,15 @@ async function interactiveSelect(title, items, pageSize = 12) {
 
     const cleanup = () => {
       stdin.removeListener('data', onKey);
-      stdin.setRawMode(false);
+      if (typeof stdin.setRawMode === 'function') {
+        stdin.setRawMode(prevRaw || false);
+      }
       rl.resume();
     };
 
     stdin.on('data', onKey);
   });
 }
-
 const skills = loadSkills();
 const cwd = process.cwd();
 const histFile = path.join(HIST, path.basename(cwd) + '.json');
@@ -209,28 +264,26 @@ function header() {
   process.stdout.write(C.r);
   console.log(p('d', '  v'+VERSION+' · '+cwd));
   console.log(p('d', '  Developer: Kleber Karpov - karpovls@gmail.com'));
-  console.log(p('d', '  Model: '+model));
+  console.log(p('d', '  Modelo: '+model));
   if (activeSkill) console.log(p('m', '  Skill: '+activeSkill));
-  if (messages.length) console.log(p('d', '  History: '+messages.length+' msgs'));
-  console.log(p('gr', '\n  Type /help for commands · Ctrl+C to exit\n'));
+  if (messages.length) console.log(p('d', '  Historico: '+messages.length+' msgs'));
+  console.log(p('gr', '\n  /help para comandos · Ctrl+C para sair\n'));
 }
 
 function help() {
   const cmds = [
-    ['/model [num|id]', 'Switch or search AI models'],
-    ['/skill [name]', 'Activate/deactivate a skill'],
-    ['/skills', 'List available skills'],
-    ['/files [dir]', 'List project files'],
-    ['/run <cmd>', 'Execute local shell command'],
-    ['/status', 'Show git status'],
-    ['/diff', 'Show git diff'],
-    ['/deploy <site> [staging|prod]', 'Deploy a site'],
-    ['/scan <file>', 'Analyze script security'],
-    ['/balance', 'Check OpenRouter balance and limits'],
-    ['/paste', 'Secure mode for pasting large text blocks'],
-    ['/memory [text]', 'View or add persistent rules to MEMORY.md'],
-    ['/clear', 'Clear session history'],
-    ['/exit', 'Exit the application'],
+    ['/model', 'Navegue e escolha categoria + modelo (setas + Enter)'],
+    ['/skill [nome]', 'Ativa/desativa skill'],
+    ['/skills', 'Lista skills disponiveis'],
+    ['/files [dir]', 'Lista arquivos do projeto'],
+    ['/run <cmd>', 'Roda comando local'],
+    ['/status', 'Git status'],
+    ['/diff', 'Git diff'],
+    ['/deploy <site> [staging|prod]', 'Deploy de site'],
+    ['/scan <arquivo>', 'Analisa seguranca de um script'],
+    ['/balance', 'Verifica saldo e limites no OpenRouter'],
+    ['/clear', 'Limpa historico da sessao'],
+    ['/exit', 'Sai'],
   ];
   console.log('');
   for (const [cmd, desc] of cmds) {
@@ -243,40 +296,6 @@ function save() {
   try { fs.writeFileSync(histFile, JSON.stringify(messages.slice(-40), null, 2)); } catch {}
 }
 
-async function askPermission(toolName, args) {
-  return new Promise(resolve => {
-    console.log(p('red', `\n  ⚠️ AÇÃO DE RISCO DETECTADA: A IA quer executar: ${p('c', toolName)}`));
-    console.log(p('d', '  Parâmetros: ' + JSON.stringify(args, null, 2).split('\n').join('\n  ')));
-
-    rl.pause();
-    process.stdout.write(p('y', '\n  Executar esta ação? (y/N): '));
-
-    const stdin = process.stdin;
-    stdin.setRawMode(false);
-    stdin.resume();
-
-    const onData = (chunk) => {
-      const input = chunk.toString().trim().toLowerCase();
-      if (input === 'y' || input === 'yes') {
-        cleanup();
-        resolve(true);
-      } else {
-        cleanup();
-        resolve(false);
-      }
-    };
-
-    const cleanup = () => {
-      stdin.removeListener('data', onData);
-      stdin.pause();
-      rl.resume();
-      rl.prompt();
-    };
-
-    stdin.on('data', onData);
-  });
-}
-
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -287,48 +306,12 @@ async function handleCmd(input) {
   const [cmd, ...args] = input.trim().split(/\s+/);
   if (cmd === '/help') { help(); return; }
   if (cmd === '/exit') { save(); process.exit(0); }
-  if (cmd === '/clear') { messages = []; header(); console.log(p('y', '  Session history cleared.')); return; }
-
-  if (cmd === '/paste') {
-    isPasting = true;
-    pasteBuffer = [];
-    console.log(p('y', '\n  📋 PASTE MODE ACTIVATED'));
-    console.log(p('d', '  Paste your text freely (Ctrl+C or Ctrl+D to cancel).'));
-    console.log(p('d', '  ⚠️ To finish: press ENTER, type \x1b[1mEOF\x1b[22m (on a line by itself), and press ENTER again.\n'));
-    rl.prompt();
-    return;
-  }
-
-  if (cmd === '/memory') {
-    const memFile = path.join(cwd, 'MEMORY.md');
-    if (!args.length) {
-      if (fs.existsSync(memFile)) {
-        const content = fs.readFileSync(memFile, 'utf8');
-        console.log(p('m', '\n  🧠 MEMÓRIA DO PROJETO (MEMORY.md):'));
-        console.log(p('d', content.split('\n').map(l => '  ' + l).join('\n')));
-      } else {
-        console.log(p('y', '\n  Nenhuma memória (MEMORY.md) encontrada neste diretório.'));
-        console.log(p('d', '  Use /memory <texto> para criar uma regra ou preferência persistente.'));
-      }
-      console.log('');
-      return;
-    }
-    const newMemory = args.join(' ');
-    let existing = '';
-    if (fs.existsSync(memFile)) {
-      existing = fs.readFileSync(memFile, 'utf8').trim() + '\n\n';
-    }
-    const timestamp = new Date().toISOString().split('T')[0];
-    fs.writeFileSync(memFile, existing + `## [${timestamp}]\n- ${newMemory}\n`, 'utf8');
-    console.log(p('g', `\n  ✓ Memória atualizada em ${p('c', memFile)}`));
-    console.log(p('d', '  O modelo levará isso em consideração nas próximas interações.\n'));
-    return;
-  }
+  if (cmd === '/clear') { messages = []; header(); console.log(p('y', '  Historico limpo.')); return; }
 
   if (cmd === '/model') {
     // ── atalhos rápidos por flag: /model default | strong | free | <id-direto> ──
     if (args[0]) {
-      const direct = args[0].replace(/[<>[\]]/g, "");
+      const direct = args[0].replace(/[<>[\\]]/g, '');
       if (direct === 'strong') {
         if (!MODELS.strong) { console.log(p('red', '  Modelo strong nao configurado no .env')); return; }
         model = MODELS.strong; header(); console.log(p('g', '  Modelo: ' + model)); return;
@@ -373,14 +356,14 @@ async function handleCmd(input) {
 
       if (!filtered.length) {
         header();
-        console.log(p("red", "  Nenhum modelo encontrado para esta categoria."));
+        console.log(p('red', '  Nenhum modelo encontrado para esta categoria.'));
         return;
       }
 
       modelItems = filtered.slice(0, 60).map(m => {
         const ctx = m.context_length ? Math.round(m.context_length / 1024) + 'K' : 'N/A';
         const pIn  = cat.value === 'FREE' ? 'FREE' : formatPrice(m.pricing?.prompt);
-        const pOut  = cat.value === 'FREE' ? ''     : ' \u2192 ' + formatPrice(m.pricing?.completion);
+        const pOut  = cat.value === 'FREE' ? ''     : ' → ' + formatPrice(m.pricing?.completion);
         return { label: m.id.padEnd(48) + ctx.padEnd(6) + pIn + pOut, value: m.id };
       });
     } catch (e) {
@@ -388,47 +371,68 @@ async function handleCmd(input) {
     }
 
     // ── PASSO 3: escolha do modelo ───────────────────────────────────────────
-    const chosen = await interactiveSelect(`Modelos ${cat.value}  (\u2191/\u2193 \u00b7 Enter \u00b7 Esc=voltar)`, modelItems, 15);
+    const chosen = await interactiveSelect(`Modelos ${cat.value}  (↑/↓ · Enter · Esc=voltar)`, modelItems, 15);
     header();
     if (!chosen) { console.log(p('d', '  Cancelado.')); return; }
     model = chosen.value;
-    console.log(p('g', '  \u2713 Modelo alterado para: ' + model));
+    console.log(p('g', '  ✓ Modelo alterado para: ' + model));
     return;
   }
 
   if (cmd === '/balance') {
-    console.log(p('y', '\n  Buscando informações da conta no OpenRouter...'));
+    console.log(p('y', '\n  Fetching account info from OpenRouter...'));
     try {
-      // 1. Buscar saldo geral real da conta
-      const credits = await fetchOpenRouterCredits(API_KEY);
-      const totalBought = credits.total_credits || 0;
-      const totalGranted = credits.total_granted || 0;
-      const totalUsed = credits.total_used || 0;
-      const remainingBalance = (totalBought + totalGranted) - totalUsed;
+      // Fetch both endpoints in parallel for speed
+      const [credits, auth] = await Promise.all([
+        fetchOpenRouterCredits(API_KEY).catch(() => null),
+        fetchOpenRouterAuth(API_KEY)
+      ]);
 
-      console.log('\n' + p('c', '  💰 SALDO GERAL DA CONTA:'));
-      console.log(`  ${p('d', 'Total comprado + concedido:')} ${p('g', '$' + (totalBought + totalGranted).toFixed(4))}`);
-      console.log(`  ${p('d', 'Total já consumido:')} ${p('red', '$' + totalUsed.toFixed(4))}`);
-      console.log(`  ${p('d', 'SALDO RESTANTE DISPONÍVEL:')} ${p('g', '$' + remainingBalance.toFixed(4))}`);
+      // ── Account-level balance (from /api/v1/credits) ──
+      if (credits) {
+        const totalCredits = credits.total_credits || 0;
+        const totalUsage = credits.total_usage || 0;
+        const remaining = totalCredits - totalUsage;
+        const usagePct = totalCredits > 0 ? ((totalUsage / totalCredits) * 100).toFixed(1) : '0.0';
 
-      // 2. Buscar limites específicos desta chave API
-      const keyInfo = await fetchOpenRouterAuth(API_KEY);
-      console.log('\n' + p('c', '  🔑 STATUS DESTA CHAVE API:'));
-      console.log(`  ${p('d', 'Label:')} ${keyInfo.label || 'N/A'}`);
-
-      if (keyInfo.limit !== null && keyInfo.limit !== undefined) {
-        console.log(`  ${p('d', 'Limite de gasto artificial desta chave:')} $${keyInfo.limit.toFixed(4)}`);
-        const keyRemaining = keyInfo.limit_remaining !== null ? keyInfo.limit_remaining : (keyInfo.limit - keyInfo.usage);
-        console.log(`  ${p('d', 'Saldo restante específico desta chave:')} ${p('g', '$' + keyRemaining.toFixed(4))}`);
+        console.log('\n' + p('c', '  💰 ACCOUNT BALANCE:'));
+        console.log(`  ${p('d', 'Total credits purchased:')}   ${p('g', '$' + totalCredits.toFixed(4))}`);
+        console.log(`  ${p('d', 'Total consumed (all keys):')} ${p('y', '$' + totalUsage.toFixed(4))} (${usagePct}%)`);
+        const balColor = remaining > 5 ? 'g' : remaining > 1 ? 'y' : 'red';
+        console.log(`  ${p('d', 'REMAINING BALANCE:')}         ${p(balColor, '$' + remaining.toFixed(4))}`);
       } else {
-        console.log(`  ${p('d', 'Limite desta chave:')} ${p('g', 'Ilimitado (consome diretamente do saldo geral da conta acima)')}`);
+        console.log('\n' + p('y', '  ⚠  Could not fetch account credits (may require a Management API key).'));
+        console.log(p('d', '     Check your balance at: https://openrouter.ai/activity'));
       }
 
-      if (totalUsed > 0 && !keyInfo.is_free_tier) {
-        // Apenas informativo
+      // ── Per-key usage details (from /api/v1/key) ──
+      console.log('\n' + p('c', '  🔑 THIS API KEY:'));
+      console.log(`  ${p('d', 'Label:')}             ${auth.label || 'N/A'}`);
+      console.log(`  ${p('d', 'All-time usage:')}    ${p('g', '$' + (auth.usage || 0).toFixed(4))}`);
+
+      if (auth.usage_daily !== undefined) {
+        console.log(`  ${p('d', 'Today:')}             ${p('d', '$' + (auth.usage_daily || 0).toFixed(4))}`);
+      }
+      if (auth.usage_weekly !== undefined) {
+        console.log(`  ${p('d', 'This week:')}         ${p('d', '$' + (auth.usage_weekly || 0).toFixed(4))}`);
+      }
+      if (auth.usage_monthly !== undefined) {
+        console.log(`  ${p('d', 'This month:')}        ${p('d', '$' + (auth.usage_monthly || 0).toFixed(4))}`);
+      }
+
+      if (auth.limit !== null && auth.limit !== undefined) {
+        console.log(`  ${p('d', 'Key limit:')}         $${auth.limit.toFixed(4)}`);
+        const keyRemaining = auth.limit - (auth.usage || 0);
+        console.log(`  ${p('d', 'Key remaining:')}     ${p('g', '$' + keyRemaining.toFixed(4))}`);
+      } else {
+        console.log(`  ${p('d', 'Key limit:')}         ${p('g', 'Unlimited (uses account credits)')}`);
+      }
+
+      if (auth.is_free_tier) {
+        console.log(p('red', '\n  ⚠ This key appears to be limited to the Free Tier.'));
       }
     } catch (e) {
-      console.log(p("red", "  Erro ao buscar saldo: " + e.message));
+      console.log(p("red", "  Error fetching balance: " + e.message));
     }
     console.log('');
     return;
@@ -452,15 +456,6 @@ async function handleCmd(input) {
     activeSkill = args[0];
     header();
     console.log(p('m', '  Skill "'+args[0]+'" ativada.'));
-    return;
-  }
-
-  // Atalho dedicado para o framework Reversa
-  if (cmd === '/reversa') {
-    if (!skills['reversa']) { console.log(p('red', '  Skill "reversa" nao encontrada. Verifique a pasta skills/.')); return; }
-    activeSkill = 'reversa';
-    header();
-    console.log(p('m', '  ⚙️ Framework Reversa ativado. O agente ira iniciar a analise do projeto legado conforme as diretrizes.'));
     return;
   }
 
@@ -528,17 +523,7 @@ async function handleCmd(input) {
 
 async function chat(input) {
   messages.push({ role: 'user', content: input });
-  let sysExtra = activeSkill ? skillSystemPrompt(activeSkill, skills) : '';
-
-  // INJEÇÃO DE MEMÓRIA PERSISTENTE
-  const memFile = path.join(cwd, 'MEMORY.md');
-  if (fs.existsSync(memFile)) {
-    const memContent = fs.readFileSync(memFile, 'utf8').trim();
-    if (memContent) {
-      sysExtra += `\n\n--- MEMÓRIA DO PROJETO (Regras e Preferências Persistentes) ---\n${memContent}\n--- FIM DA MEMÓRIA ---`;
-    }
-  }
-
+  const sysExtra = activeSkill ? skillSystemPrompt(activeSkill, skills) : '';
   let msg;
   try {
     process.stdout.write('\n' + p('c', '  kcode') + ' ');
@@ -554,26 +539,20 @@ async function chat(input) {
     messages.pop();
     return;
   }
+  if (!msg) {
+    console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
+    messages.pop();
+    return;
+  }
   messages.push(msg);
 
-  while (msg.tool_calls && msg.tool_calls.length > 0) {
+  while (msg && msg.tool_calls && msg.tool_calls.length > 0) {
     console.log('');
     const results = [];
     for (const tc of msg.tool_calls) {
       const name = tc.function.name;
       let args = {};
       try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-
-      const REQUIRES_APPROVAL = ['write_file', 'apply_patch', 'run_cmd', 'ssh_exec', 'deploy_site'];
-      if (REQUIRES_APPROVAL.includes(name)) {
-        const approved = await askPermission(name, args);
-        if (!approved) {
-          console.log(p('red', '  ❌ Ação cancelada pelo usuário.'));
-          results.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify({ error: 'Ação cancelada pelo usuário por política de segurança.' }) });
-          continue;
-        }
-      }
-
       console.log(p('y', '  ⚙ ' + name) + p('d', '(' + JSON.stringify(args).slice(0, 80) + ')'));
       const result = await executeTool(name, args);
       console.log(result.error ? p('red', '  ✗ ' + result.error) : p('g', '  ✓ OK'));
@@ -583,15 +562,13 @@ async function chat(input) {
     try {
       process.stdout.write('\n' + p('c', '  kcode') + ' ');
       msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken: t => process.stdout.write(t) });
+      if (!msg) {
+        console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
+        break;
+      }
       messages.push(msg);
     } catch (e) {
-      if (e.message.includes('402')) {
-        console.log('\n' + p('red', '  Erro 402: Sem saldo ou limite atingido no OpenRouter.'));
-        console.log(p('y', '  Dica: Modelos ":free" as vezes falham se o provedor estiver instavel.'));
-        console.log(p('y', '  Tente o modelo: qwen/qwen-turbo:free ou google/gemini-2.0-flash-exp:free'));
-      } else {
-        console.log('\n' + p('red', '  Erro: ' + e.message));
-      }
+      console.log('\n' + p('red', '  Erro: ' + e.message));
       break;
     }
   }
@@ -602,65 +579,30 @@ async function chat(input) {
 header();
 rl.prompt();
 
-// Busca de saldo REAL da conta em background na inicialização (não bloqueante)
-fetchOpenRouterCredits(API_KEY).then(credits => {
-  const totalBought = credits.total_credits || 0;
-  const totalGranted = credits.total_granted || 0;
-  const totalUsed = credits.total_used || 0;
-  const remainingBalance = (totalBought + totalGranted) - totalUsed;
-  console.log('\n' + p('g', '  💰 Saldo OpenRouter: $' + remainingBalance.toFixed(4)));
-  rl.prompt();
-}).catch(() => {
-  // Aviso discreto em vez de falha silenciosa total
-  console.log('\n' + p('y', '  ⚠️  Não foi possível buscar o saldo do OpenRouter. Verifique sua API_KEY ou conexão.'));
-  rl.prompt();
-});
+// Fetch real account balance in background on startup (non-blocking)
+// Set KCODE_SHOW_BALANCE=false in .env to disable
+const SHOW_BALANCE = (process.env.KCODE_SHOW_BALANCE || 'true').toLowerCase() !== 'false';
+if (SHOW_BALANCE) {
+  const balanceTimeout = setTimeout(() => {}, 8000);
+
+  fetchOpenRouterCredits(API_KEY).then(credits => {
+    clearTimeout(balanceTimeout);
+    const totalCredits = credits.total_credits || 0;
+    const totalUsage = credits.total_usage || 0;
+    const remainingBalance = totalCredits - totalUsage;
+    const balColor = remainingBalance > 5 ? 'g' : remainingBalance > 1 ? 'y' : 'red';
+    console.log('\n' + p(balColor, '  💰 OpenRouter Balance: $' + remainingBalance.toFixed(2)));
+    rl.prompt();
+  }).catch((err) => {
+    clearTimeout(balanceTimeout);
+    console.log('\n' + p('y', '  ⚠️  Could not fetch balance: ' + (err.message || 'unknown error')));
+    rl.prompt();
+  });
+}
 
 rl.on('line', async line => {
-  // MODO DE COLAGEM (PASTE MODE)
-  if (isPasting) {
-    const trimmed = line.trim();
-    // Aceita EOF ou eof para ser mais amigável
-    if (trimmed === 'EOF' || trimmed === 'eof') {
-      isPasting = false;
-      const fullText = pasteBuffer.join('\n');
-      pasteBuffer = [];
-
-      if (fullText.trim()) {
-        const pasteDir = path.join(os.homedir(), '.kcode', 'pastes');
-        fs.mkdirSync(pasteDir, { recursive: true });
-        const fileName = `pasted_block_${Date.now()}.md`;
-        const filePath = path.join(pasteDir, fileName);
-        fs.writeFileSync(filePath, fullText, 'utf8');
-
-        const lineCount = fullText.split('\n').length;
-        console.log(p('y', `\n  📋 Texto colado com sucesso! (${lineCount} linhas, ${fullText.length} caracteres).`));
-        console.log(p('d', `  Salvo em: ${p('c', filePath)}`));
-        console.log(p('c', '  kcode ') + p('d', 'Processando o texto colado...\n'));
-
-        const instruction = `O usuário colou um bloco grande de texto usando o modo /paste. O conteúdo foi salvo em: "${filePath}". Por favor, use a ferramenta 'read_file' para ler este arquivo e prossiga com a solicitação do usuário.`;
-        await chat(instruction);
-      } else {
-        console.log(p('d', '  Colagem cancelada (texto vazio).'));
-      }
-      rl.prompt();
-      return;
-    } else {
-      pasteBuffer.push(line);
-    }
-    rl.prompt();
-    return;
-  }
-
   rl.pause();
-  let input = line.trim();
-
-  if (input.toLowerCase() === 'exit') {
-    console.log(p('y', '\n  Saindo...'));
-    save();
-    process.exit(0);
-  }
-
+  const input = line.trim();
   if (input) {
     if (input.startsWith('/')) await handleCmd(input);
     else await chat(input);

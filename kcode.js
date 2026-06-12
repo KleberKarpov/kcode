@@ -85,13 +85,13 @@ const VERSION = '0.3.0';
 const API_KEY = process.env.OPENROUTER_API_KEY;
 
 if (!API_KEY) {
-  console.log('\n' + p('red', '  ⚠️ ERRO: OPENROUTER_API_KEY não encontrada.'));
-  console.log(p('d', '  O KCode precisa de uma chave de API para se comunicar com a IA.\n'));
-  console.log(p('c', '  ✅ Como resolver em 30 segundos:'));
-  console.log(p('d', '  1. Obtenha sua chave gratuita em: https://openrouter.ai/keys'));
-  console.log(p('d', '  2. Cole sua chave e execute este comando no terminal:'));
-  console.log(p('g', '     echo "OPENROUTER_API_KEY=sua_chave_aqui" >> .env'));
-  console.log(p('d', '  3. Digite "kcode" novamente para iniciar.\n'));
+  console.log('\n' + p('red', '  ⚠️ ERROR: OPENROUTER_API_KEY not found.'));
+  console.log(p('d', '  KCode needs an API key to communicate with the AI.\n'));
+  console.log(p('c', '  ✅ How to fix in 30 seconds:'));
+  console.log(p('d', '  1. Get your free key at: https://openrouter.ai/keys'));
+  console.log(p('d', '  2. Copy your key and run this command in the terminal:'));
+  console.log(p('g', '     echo "OPENROUTER_API_KEY=your_key_here" >> .env'));
+  console.log(p('d', '  3. Type "kcode" again to start.\n'));
   process.exit(1);
 }
 
@@ -209,27 +209,28 @@ function header() {
   process.stdout.write(C.r);
   console.log(p('d', '  v'+VERSION+' · '+cwd));
   console.log(p('d', '  Developer: Kleber Karpov - karpovls@gmail.com'));
-  console.log(p('d', '  Modelo: '+model));
+  console.log(p('d', '  Model: '+model));
   if (activeSkill) console.log(p('m', '  Skill: '+activeSkill));
-  if (messages.length) console.log(p('d', '  Historico: '+messages.length+' msgs'));
-  console.log(p('gr', '\n  /help para comandos · Ctrl+C para sair\n'));
+  if (messages.length) console.log(p('d', '  History: '+messages.length+' msgs'));
+  console.log(p('gr', '\n  Type /help for commands · Ctrl+C to exit\n'));
 }
 
 function help() {
   const cmds = [
-    ['/model [num|id]', 'Escolha ou busque modelos'],
-    ['/skill [nome]', 'Ativa/desativa skill'],
-    ['/skills', 'Lista skills disponiveis'],
-    ['/files [dir]', 'Lista arquivos do projeto'],
-    ['/run <cmd>', 'Roda comando local'],
-    ['/status', 'Git status'],
-    ['/diff', 'Git diff'],
-    ['/deploy <site> [staging|prod]', 'Deploy de site'],
-    ['/scan <arquivo>', 'Analisa seguranca de um script'],
-    ['/balance', 'Verifica saldo e limites no OpenRouter'],
-    ['/paste', 'Modo seguro para colar blocos grandes de texto'],
-    ['/clear', 'Limpa historico da sessao'],
-    ['/exit', 'Sai'],
+    ['/model [num|id]', 'Switch or search AI models'],
+    ['/skill [name]', 'Activate/deactivate a skill'],
+    ['/skills', 'List available skills'],
+    ['/files [dir]', 'List project files'],
+    ['/run <cmd>', 'Execute local shell command'],
+    ['/status', 'Show git status'],
+    ['/diff', 'Show git diff'],
+    ['/deploy <site> [staging|prod]', 'Deploy a site'],
+    ['/scan <file>', 'Analyze script security'],
+    ['/balance', 'Check OpenRouter balance and limits'],
+    ['/paste', 'Secure mode for pasting large text blocks'],
+    ['/memory [text]', 'View or add persistent rules to MEMORY.md'],
+    ['/clear', 'Clear session history'],
+    ['/exit', 'Exit the application'],
   ];
   console.log('');
   for (const [cmd, desc] of cmds) {
@@ -286,14 +287,14 @@ async function handleCmd(input) {
   const [cmd, ...args] = input.trim().split(/\s+/);
   if (cmd === '/help') { help(); return; }
   if (cmd === '/exit') { save(); process.exit(0); }
-  if (cmd === '/clear') { messages = []; header(); console.log(p('y', '  Historico limpo.')); return; }
+  if (cmd === '/clear') { messages = []; header(); console.log(p('y', '  Session history cleared.')); return; }
 
   if (cmd === '/paste') {
     isPasting = true;
     pasteBuffer = [];
-    console.log(p('y', '\n  📋 MODO DE COLAGEM ATIVADO'));
-    console.log(p('d', '  Cole seu texto livremente (Ctrl+C ou Ctrl+D também cancelam).'));
-    console.log(p('d', '  ⚠️ Para finalizar: pressione ENTER, digite \x1b[1mEOF\x1b[22m (em uma linha sozinha) e pressione ENTER novamente.\n'));
+    console.log(p('y', '\n  📋 PASTE MODE ACTIVATED'));
+    console.log(p('d', '  Paste your text freely (Ctrl+C or Ctrl+D to cancel).'));
+    console.log(p('d', '  ⚠️ To finish: press ENTER, type \x1b[1mEOF\x1b[22m (on a line by itself), and press ENTER again.\n'));
     rl.prompt();
     return;
   }

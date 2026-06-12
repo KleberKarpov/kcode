@@ -30,7 +30,7 @@
 
 1. Clone this repository and install dependencies:
    ```bash
-   git clone https://github.com/karpov/kcode.git
+   git clone https://github.com/kleberkarpov/kcode.git
    cd kcode
    npm install
    ```

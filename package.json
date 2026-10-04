@@ -1,6 +1,6 @@
 {
   "name": "kcode",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "CLI Agent para coding usando OpenRouter",
   "main": "kcode.js",
   "bin": { "kcode": "./kcode.js" },

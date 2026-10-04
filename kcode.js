@@ -140,8 +140,43 @@ function formatPrice(val) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env') });
+if (fs.existsSync(path.join(process.cwd(), '.env'))) {
+  dotenv.config({ path: path.join(process.cwd(), '.env'), override: false });
+}
+if (!process.env.OPENROUTER_API_KEY && fs.existsSync(path.join(os.homedir(), '.kcode', '.env'))) {
+  dotenv.config({ path: path.join(os.homedir(), '.kcode', '.env') });
+}
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
+const rawArgs = process.argv.slice(2);
+
+if (rawArgs.includes('--version') || rawArgs.includes('-v')) {
+  console.log(`kcode v${VERSION}`);
+  process.exit(0);
+}
+
+if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
+  console.log(`
+kcode v${VERSION} — Terminal AI coding agent powered by OpenRouter
+
+Uso:
+  kcode                                Inicia a sessão interativa (REPL)
+  kcode run "<prompt>" [opções]        Executa instrução em modo autônomo/headless
+  kcode -p "<prompt>" [opções]         Atalho para execução pontual (print mode)
+  kcode --balance                      Consulta o saldo real do OpenRouter
+  kcode --version, -v                  Exibe a versão do kcode
+  kcode --help, -h                     Exibe esta ajuda
+
+Opções do modo headless:
+  -m, --model <modelo>                 Especifica o modelo OpenRouter (ex: anthropic/claude-3.5-sonnet)
+  -s, --skill <skill>                  Ativa uma skill (ex: reversa, frontend-design)
+  -y, --yes                            Auto-aprovação de ferramentas para agentes autônomos
+  --no-history                         Não grava no histórico de conversa do projeto
+  -q, --quiet                          Omite pensamentos e logs de ferramentas
+`);
+  process.exit(0);
+}
+
 const API_KEY = process.env.OPENROUTER_API_KEY;
 const SIMULATE = process.env.KCODE_SIMULATE === 'true';
 if (!API_KEY && !SIMULATE) { console.error('\n OPENROUTER_API_KEY nao definida no .env\n'); process.exit(1); }
@@ -186,7 +221,7 @@ function renderSelector(title, items, cursor, startIdx = 0, pageSize = 12) {
 async function interactiveSelect(title, items, pageSize = 12) {
   return new Promise(resolve => {
     let cursor = 0, startIdx = 0;
-    rl.pause();
+    if (rl) rl.pause();
     const stdin = process.stdin;
     const prevRaw = stdin.isRaw;
     if (typeof stdin.setRawMode === 'function') {
@@ -230,7 +265,7 @@ async function interactiveSelect(title, items, pageSize = 12) {
       if (typeof stdin.setRawMode === 'function') {
         stdin.setRawMode(prevRaw || false);
       }
-      rl.resume();
+      if (rl) rl.resume();
     };
 
     stdin.on('data', onKey);
@@ -297,11 +332,7 @@ function save() {
   try { fs.writeFileSync(histFile, JSON.stringify(messages.slice(-40), null, 2)); } catch {}
 }
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  prompt: '\n' + p('g', '❯') + ' '
-});
+let rl = null;
 
 let inPasteMode = false;
 let pasteBuffer = [];
@@ -577,7 +608,17 @@ async function handleCmd(input) {
   console.log(p('red', '  Desconhecido: ' + cmd + '. Use /help.'));
 }
 
-async function chat(input) {
+const DANGEROUS_TOOLS = new Set([
+  'write_file',
+  'replace_in_file',
+  'apply_patch',
+  'run_cmd',
+  'ssh_exec',
+  'deploy_site'
+]);
+
+async function chat(input, options = {}) {
+  const { headless = false, quiet = false, noHistory = false, autoYes = false } = options;
   messages.push({ role: 'user', content: input });
 
   // Injeção contextual persistente de MEMORY.md se existir
@@ -595,6 +636,7 @@ async function chat(input) {
 
   let isThinking = false;
   const onReasoning = (token) => {
+    if (quiet) return;
     if (!isThinking) {
       isThinking = true;
       process.stdout.write(p('d', '\n  💭 [Pensamento: '));
@@ -605,16 +647,16 @@ async function chat(input) {
   const onToken = (token) => {
     if (isThinking) {
       isThinking = false;
-      process.stdout.write(p('d', ']\n\n') + p('c', '  kcode') + ' ');
+      if (!quiet) process.stdout.write(p('d', ']\n\n') + p('c', '  kcode') + ' ');
     }
     process.stdout.write(token);
   };
 
   let msg;
   try {
-    process.stdout.write('\n' + p('c', '  kcode') + ' ');
+    if (!quiet) process.stdout.write('\n' + p('c', '  kcode') + ' ');
     msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken, onReasoning });
-    if (isThinking) {
+    if (isThinking && !quiet) {
       process.stdout.write(p('d', ']\n'));
     }
   } catch (e) {
@@ -626,12 +668,14 @@ async function chat(input) {
       console.log('\n' + p('red', '  Erro: ' + e.message));
     }
     messages.pop();
+    if (headless) process.exit(1);
     return;
   }
 
   if (!msg) {
     console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
     messages.pop();
+    if (headless) process.exit(1);
     return;
   }
   messages.push(msg);
@@ -641,15 +685,24 @@ async function chat(input) {
 
   while (msg && msg.tool_calls && msg.tool_calls.length > 0 && stepCount < MAX_TOOL_STEPS) {
     stepCount++;
-    console.log('');
+    if (!quiet) console.log('');
     const results = [];
     for (const tc of msg.tool_calls) {
       const name = tc.function.name;
       let args = {};
       try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
-      console.log(p('y', '  ⚙ ' + name) + p('d', '(' + JSON.stringify(args).slice(0, 80) + ')'));
+
+      // Salvaguarda: em modo headless sem --yes, bloquear ferramentas com efeitos colaterais
+      if (headless && !autoYes && DANGEROUS_TOOLS.has(name)) {
+        const errorMsg = `Operação '${name}' bloqueada: em modo headless sem a flag --yes / -y, apenas ferramentas seguras de leitura são permitidas.`;
+        if (!quiet) console.log(p('red', '  ✗ ' + errorMsg));
+        results.push({ role: 'tool', tool_call_id: tc.id || `call_${Date.now()}`, content: JSON.stringify({ error: errorMsg }) });
+        continue;
+      }
+
+      if (!quiet) console.log(p('y', '  ⚙ ' + name) + p('d', '(' + JSON.stringify(args).slice(0, 80) + ')'));
       const result = await executeTool(name, args);
-      console.log(result.error ? p('red', '  ✗ ' + result.error) : p('g', '  ✓ OK'));
+      if (!quiet) console.log(result.error ? p('red', '  ✗ ' + result.error) : p('g', '  ✓ OK'));
       results.push({ role: 'tool', tool_call_id: tc.id || `call_${Date.now()}`, content: JSON.stringify(result) });
     }
 
@@ -658,14 +711,15 @@ async function chat(input) {
 
     try {
       isThinking = false;
-      process.stdout.write('\n' + p('c', '  kcode') + ' ');
+      if (!quiet) process.stdout.write('\n' + p('c', '  kcode') + ' ');
       msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken, onReasoning });
-      if (isThinking) {
+      if (isThinking && !quiet) {
         process.stdout.write(p('d', ']\n'));
       }
       if (!msg) {
         console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
         messages.splice(previousLength);
+        if (headless) process.exit(1);
         break;
       }
       messages.push(msg);
@@ -673,67 +727,175 @@ async function chat(input) {
       console.log('\n' + p('red', '  Erro: ' + e.message));
       // Reverte mensagens de ferramenta não respondidas para evitar envenenar o histórico da sessão
       messages.splice(previousLength);
+      if (headless) process.exit(1);
       break;
     }
   }
 
-  if (stepCount >= MAX_TOOL_STEPS) {
+  if (stepCount >= MAX_TOOL_STEPS && !quiet) {
     console.log('\n' + p('y', '  ⚠️ Limite máximo de iterações de ferramentas atingido (15 passos).'));
   }
 
   console.log('\n');
-  save();
+  if (!noHistory) save();
+  if (headless) process.exit(0);
 }
 
-header();
-rl.prompt();
-
-// Fetch real account balance in background on startup (non-blocking)
-// Set KCODE_SHOW_BALANCE=false in .env to disable
-const SHOW_BALANCE = (process.env.KCODE_SHOW_BALANCE || 'true').toLowerCase() !== 'false';
-if (SHOW_BALANCE) {
-  const balanceTimeout = setTimeout(() => {}, 8000);
-
-  fetchOpenRouterCredits(API_KEY).then(credits => {
-    clearTimeout(balanceTimeout);
-    const totalCredits = credits.total_credits || 0;
-    const totalUsage = credits.total_usage || 0;
-    const remainingBalance = totalCredits - totalUsage;
-    const balColor = remainingBalance > 5 ? 'g' : remainingBalance > 1 ? 'y' : 'red';
-    console.log('\n' + p(balColor, '  💰 OpenRouter Balance: $' + remainingBalance.toFixed(2)));
-    rl.prompt();
-  }).catch((err) => {
-    clearTimeout(balanceTimeout);
-    console.log('\n' + p('y', '  ⚠️  Could not fetch balance: ' + (err.message || 'unknown error')));
-    rl.prompt();
+function startREPL() {
+  rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: '\n' + p('g', '❯') + ' '
   });
-}
 
-rl.on('line', async line => {
-  rl.pause();
-  if (inPasteMode) {
-    if (line.trim() === 'EOF') {
-      inPasteMode = false;
-      const content = pasteBuffer.join('\n').trim();
-      pasteBuffer = [];
-      if (!content) {
-        console.log(p('y', '  Modo colar cancelado (conteúdo vazio).\n'));
+  header();
+  rl.prompt();
+
+  // Fetch real account balance in background on startup (non-blocking)
+  // Set KCODE_SHOW_BALANCE=false in .env to disable
+  const SHOW_BALANCE = (process.env.KCODE_SHOW_BALANCE || 'true').toLowerCase() !== 'false';
+  if (SHOW_BALANCE) {
+    const balanceTimeout = setTimeout(() => {}, 8000);
+
+    fetchOpenRouterCredits(API_KEY).then(credits => {
+      clearTimeout(balanceTimeout);
+      const totalCredits = credits.total_credits || 0;
+      const totalUsage = credits.total_usage || 0;
+      const remainingBalance = totalCredits - totalUsage;
+      const balColor = remainingBalance > 5 ? 'g' : remainingBalance > 1 ? 'y' : 'red';
+      console.log('\n' + p(balColor, '  💰 OpenRouter Balance: $' + remainingBalance.toFixed(2)));
+      rl.prompt();
+    }).catch((err) => {
+      clearTimeout(balanceTimeout);
+      console.log('\n' + p('y', '  ⚠️  Could not fetch balance: ' + (err.message || 'unknown error')));
+      rl.prompt();
+    });
+  }
+
+  rl.on('line', async line => {
+    rl.pause();
+    if (inPasteMode) {
+      if (line.trim() === 'EOF') {
+        inPasteMode = false;
+        const content = pasteBuffer.join('\n').trim();
+        pasteBuffer = [];
+        if (!content) {
+          console.log(p('y', '  Modo colar cancelado (conteúdo vazio).\n'));
+        } else {
+          console.log(p('g', `\n  ✓ Recebido bloco com ${content.split('\n').length} linhas. Enviando...\n`));
+          await chat(content);
+        }
       } else {
-        console.log(p('g', `\n  ✓ Recebido bloco com ${content.split('\n').length} linhas. Enviando...\n`));
-        await chat(content);
+        pasteBuffer.push(line);
+        rl.resume();
+        return;
       }
     } else {
-      pasteBuffer.push(line);
-      rl.resume();
-      return;
+      const input = line.trim();
+      if (input) {
+        if (input.startsWith('/')) await handleCmd(input);
+        else await chat(input);
+      }
     }
-  } else {
-    const input = line.trim();
-    if (input) {
-      if (input.startsWith('/')) await handleCmd(input);
-      else await chat(input);
+    rl.resume();
+    rl.prompt();
+  }).on('close', () => { save(); process.exit(0); });
+}
+
+async function main() {
+  if (rawArgs.includes('--balance')) {
+    try {
+      const credits = await fetchOpenRouterCredits(API_KEY);
+      const totalCredits = credits.total_credits || 0;
+      const totalUsage = credits.total_usage || 0;
+      const remainingBalance = totalCredits - totalUsage;
+      const balColor = remainingBalance > 5 ? 'g' : remainingBalance > 1 ? 'y' : 'red';
+      console.log(p(balColor, `💰 OpenRouter Balance: $${remainingBalance.toFixed(2)} (Total: $${totalCredits.toFixed(2)}, Consumo: $${totalUsage.toFixed(2)})`));
+
+      // Auditoria de governança da chave (OpenRouter Key Security)
+      try {
+        const keyInfo = await fetchOpenRouterAuth(API_KEY);
+        if (keyInfo.limit !== null && keyInfo.limit !== undefined) {
+          console.log(p('d', `   Limite configurado na chave: $${keyInfo.limit.toFixed(2)} | Consumo da chave: $${(keyInfo.usage || 0).toFixed(2)}`));
+        } else {
+          console.log(p('y', `   ⚠️  Aviso de Segurança: Chave sem limite de crédito configurado no OpenRouter.`));
+          console.log(p('d', `   Recomendação: Defina um limite em https://openrouter.ai/settings/keys para proteger contra consumo excessivo por agentes autônomos.`));
+        }
+      } catch {}
+
+      process.exit(0);
+    } catch (err) {
+      console.error(p('red', `⚠️ Erro ao consultar saldo: ${err.message}`));
+      process.exit(1);
     }
   }
-  rl.resume();
-  rl.prompt();
-}).on('close', () => { save(); process.exit(0); });
+
+  // Parse headless / one-shot execution
+  let isHeadless = false;
+  let promptText = '';
+  let selectedModel = null;
+  let selectedSkill = null;
+  let autoYes = false;
+  let noHistory = false;
+  let quietMode = false;
+
+  let i = 0;
+  if (rawArgs.length > 0) {
+    if (rawArgs[0] === 'run') {
+      isHeadless = true;
+      i = 1;
+    } else if (rawArgs[0] === '-p' || rawArgs[0] === '--prompt') {
+      isHeadless = true;
+      i = 1;
+      if (i < rawArgs.length && !rawArgs[i].startsWith('-')) {
+        promptText = rawArgs[i];
+        i++;
+      }
+    } else if (!rawArgs[0].startsWith('-')) {
+      isHeadless = true;
+      promptText = rawArgs[0];
+      i = 1;
+    }
+  }
+
+  while (i < rawArgs.length) {
+    const arg = rawArgs[i];
+    if (arg === '-m' || arg === '--model') {
+      selectedModel = rawArgs[++i];
+    } else if (arg === '-s' || arg === '--skill') {
+      selectedSkill = rawArgs[++i];
+    } else if (arg === '-y' || arg === '--yes') {
+      autoYes = true;
+    } else if (arg === '--no-history') {
+      noHistory = true;
+    } else if (arg === '-q' || arg === '--quiet') {
+      quietMode = true;
+    } else if (!promptText && !arg.startsWith('-')) {
+      promptText = arg;
+    }
+    i++;
+  }
+
+  if (isHeadless) {
+    if (!promptText) {
+      console.error(p('red', 'Erro: Nenhum prompt informado para execução headless.'));
+      console.error(p('d', 'Exemplo: kcode run "Refatore a função" -y'));
+      process.exit(1);
+    }
+    if (selectedModel) {
+      if (MODELS[selectedModel]) model = MODELS[selectedModel];
+      else model = selectedModel;
+    }
+    if (selectedSkill) activeSkill = selectedSkill;
+
+    await chat(promptText, { headless: true, autoYes, quiet: quietMode, noHistory });
+    return;
+  }
+
+  startREPL();
+}
+
+main().catch(err => {
+  console.error(p('red', 'Erro fatal: ' + err.message));
+  process.exit(1);
+});

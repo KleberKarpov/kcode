@@ -296,6 +296,39 @@ To use in Claude Code or Antigravity:
 /reversa <agent>  # Invoke a specific agent
 ```
 
+### ⚡ Global Skill `kcode` for IDEs & AI Agents
+
+`kcode` is distributed as a global [Agent Skill](https://agentskills.io/) available to **Claude Code**, **Google Antigravity**, **Cursor**, **Codex**, and other compatible agents.
+
+#### Canonical Directory Structure
+
+- **Claude Code**: `~/.claude/skills/kcode/`
+- **Google Antigravity**: `~/.gemini/antigravity/skills/kcode/` (and `~/.gemini/config/skills/kcode/`)
+- **Agent Skills Open Standard**: `~/.agents/skills/kcode/`
+
+#### Non-Interactive / Headless Execution
+
+External agents and shell scripts can run `kcode` headlessly without interactive terminal prompts:
+
+```bash
+# Autonomous execution with tool approval enabled
+kcode run "Refactor the authentication flow in src/auth.js" --yes
+
+# Safe read-only mode (modifying tools blocked without --yes)
+kcode run "Review codebase for memory leaks"
+
+# Quick print shortcut with specific OpenRouter model
+kcode -p "Generate TypeScript interface for this JSON" -m mistralai/codestral-2501
+
+# Check real OpenRouter balance & key credit limit
+kcode --balance
+
+# Invoke via skill wrapper
+~/.agents/skills/kcode/scripts/run_kcode.sh "<prompt>" [options]
+```
+
+See [TECHNICAL_OPINION.md](file:///Volumes/KARPOV%202TB/KLEBER%20KARPOV/WORKSPACE/kcode/TECHNICAL_OPINION.md) for full architectural, security, and governance specifications.
+
 ---
 
 ## 🔄 Reversa Framework

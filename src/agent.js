@@ -1,4 +1,4 @@
-import { read_file, write_file, list_files, find_in_repo, apply_patch } from './tools/files.js';
+import { read_file, write_file, replace_in_file, list_files, find_in_repo, apply_patch } from './tools/files.js';
 import { run_cmd, git_status, git_diff } from './tools/shell.js';
 import { ssh_exec, deploy_site, tail_logs } from './tools/ssh.js';
 
@@ -7,15 +7,39 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Lê o conteúdo de um arquivo',
-      parameters: { type: 'object', properties: { path: { type: 'string', description: 'Caminho do arquivo' } }, required: ['path'] }
+      description: 'Lê o conteúdo de um arquivo. Permite ler intervalos específicos de linhas com start_line e end_line.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Caminho do arquivo' },
+          start_line: { type: 'number', description: 'Linha inicial (1-indexed, opcional)' },
+          end_line: { type: 'number', description: 'Linha final (1-indexed, opcional)' }
+        },
+        required: ['path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'replace_in_file',
+      description: 'Substitui cirurgicamente um trecho exato de código (target) por outro (replacement) em um arquivo existente. Cria automaticamente backup .kcode.bak.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Caminho do arquivo' },
+          target: { type: 'string', description: 'Trecho exato a ser substituído (inclua linhas de contexto ao redor para ser único no arquivo)' },
+          replacement: { type: 'string', description: 'Novo trecho de código que substituirá o target' }
+        },
+        required: ['path', 'target', 'replacement']
+      }
     }
   },
   {
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Escreve (cria ou substitui) um arquivo. Sempre cria backup .kcode.bak antes.',
+      description: 'Escreve (cria ou substitui o arquivo inteiro). Use replace_in_file quando quiser apenas alterar um trecho. Cria backup .kcode.bak antes.',
       parameters: { type: 'object', properties: { path: { type: 'string', description: 'Caminho' }, content: { type: 'string', description: 'Conteúdo' } }, required: ['path', 'content'] }
     }
   },
@@ -39,7 +63,7 @@ const TOOLS = [
     type: 'function',
     function: {
       name: 'apply_patch',
-      description: 'Aplica um diff/patch a um arquivo',
+      description: 'Aplica um diff/patch a um arquivo (prefira replace_in_file para alterações de código)',
       parameters: { type: 'object', properties: { path: { type: 'string' }, patch: { type: 'string' } }, required: ['path', 'patch'] }
     }
   },
@@ -94,25 +118,48 @@ const TOOLS = [
 ];
 
 const TOOL_FNS = {
-  read_file, write_file, list_files, find_in_repo, apply_patch,
+  read_file, write_file, replace_in_file, list_files, find_in_repo, apply_patch,
   run_cmd, git_status, git_diff,
   ssh_exec, deploy_site, tail_logs
 };
 
-export async function runAgent({ messages, model, apiKey, systemExtra = "", onToken }) {
+export async function runAgent({ messages, model, apiKey, systemExtra = "", onToken, onReasoning, enableTools = true }) {
   const system = `Voce e o kcode, um assistente de programacao minimalista e ultra-eficiente.
-Siga as regras: 1. Use ferramentas para agir. 2. Seja conciso. 3. Se nao souber, use find_in_repo.
+Siga as regras: 1. Use ferramentas para agir. Para editar código existente, prefira replace_in_file. 2. Seja conciso e direto. 3. Se nao souber onde fica algo, use find_in_repo.
 ${systemExtra}`;
 
-  // CORREÇÃO CRÍTICA: Sanitiza TODO o array de mensagens para remover 'tool_calls: []'
-  // Provedores como Alibaba/OpenRouter rejeitam requisições com arrays de tool_calls vazios.
+  // Sanitização rigorosa das mensagens para compatibilidade com modelos abertos e OpenAI schema
   const sanitizedMessages = messages.map(msg => {
-    if (msg.tool_calls && msg.tool_calls.length === 0) {
-      const { tool_calls, ...rest } = msg;
-      return rest;
+    const copy = { ...msg };
+    if (copy.tool_calls) {
+      if (Array.isArray(copy.tool_calls) && copy.tool_calls.length === 0) {
+        delete copy.tool_calls;
+      }
     }
-    return msg;
+    // Para mensagens de assistente com tool_calls, content vazio deve ser null
+    if (copy.role === 'assistant' && copy.tool_calls && copy.tool_calls.length > 0) {
+      if (!copy.content) copy.content = null;
+    }
+    // Garante que mensagens de ferramenta tenham id válido
+    if (copy.role === 'tool' && !copy.tool_call_id) {
+      copy.tool_call_id = 'call_default';
+    }
+    return copy;
   });
+
+  const requestBody = {
+    model,
+    messages: [{ role: "system", content: system }, ...sanitizedMessages],
+    stream: !!onToken,
+    max_tokens: 4096,
+    provider: {
+      allow_fallbacks: true
+    }
+  };
+
+  if (enableTools) {
+    requestBody.tools = TOOLS;
+  }
 
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: 'POST',
@@ -122,58 +169,102 @@ ${systemExtra}`;
       'HTTP-Referer': 'https://kcode.local',
       'X-Title': 'KCode CLI',
     },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "system", content: system }, ...sanitizedMessages],
-      tools: TOOLS,
-      stream: !!onToken,
-      provider: {
-        order: ["Anthropic", "OpenAI", "Google"],
-        allow_fallbacks: true
-      }
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!res.ok) {
-    const err = await res.json();
+    const err = await res.json().catch(() => ({}));
+    const errMsg = (err.error?.message || '').toLowerCase();
+    // Se o modelo aberto não suporta tools/function calling, retenta automaticamente sem tools
+    if (enableTools && (errMsg.includes('tool') || errMsg.includes('function') || errMsg.includes('unsupported'))) {
+      return runAgent({ messages, model, apiKey, systemExtra, onToken, onReasoning, enableTools: false });
+    }
     throw new Error(`OpenRouter error ${res.status}: ${JSON.stringify(err)}`);
   }
 
   if (!onToken) {
     const data = await res.json();
-    return data.choices[0].message;
+    return data.choices?.[0]?.message;
   }
 
   const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = "";
   let assistantMsg = { role: "assistant", content: "", tool_calls: [] };
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = new TextDecoder().decode(value);
-    for (const line of chunk.split('\n')) {
+
+    // Decodificação streaming com buffer de linhas incompletas
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith(':')) continue; // Ignora keep-alives e linhas vazias
+
       if (line.startsWith('data: ')) {
-        const dataStr = line.slice(6);
+        const dataStr = line.slice(6).trim();
         if (dataStr === '[DONE]') break;
         try {
           const data = JSON.parse(dataStr);
-          const delta = data.choices[0].delta;
-          if (delta.content) { assistantMsg.content += delta.content; onToken(delta.content); }
+          const choice = data.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta;
+          if (!delta) continue;
+
+          // Suporte a tokens de raciocínio (DeepSeek-R1, QwQ, etc.)
+          const reasoning = delta.reasoning || delta.thought;
+          if (reasoning && onReasoning) {
+            onReasoning(reasoning);
+          }
+
+          if (delta.content) {
+            assistantMsg.content += delta.content;
+            onToken(delta.content);
+          }
+
           if (delta.tool_calls) {
             for (const tc of delta.tool_calls) {
-              if (!assistantMsg.tool_calls[tc.index]) assistantMsg.tool_calls[tc.index] = { id: tc.id, function: { name: "", arguments: "" } };
-              if (tc.function.name) assistantMsg.tool_calls[tc.index].function.name += tc.function.name;
-              if (tc.function.arguments) assistantMsg.tool_calls[tc.index].function.arguments += tc.function.arguments;
+              const idx = tc.index ?? 0;
+              if (!assistantMsg.tool_calls[idx]) {
+                assistantMsg.tool_calls[idx] = {
+                  id: tc.id || `call_${idx}_${Date.now()}`,
+                  type: 'function',
+                  function: { name: "", arguments: "" }
+                };
+              }
+              if (tc.id && !assistantMsg.tool_calls[idx].id) {
+                assistantMsg.tool_calls[idx].id = tc.id;
+              }
+              if (tc.function?.name) {
+                assistantMsg.tool_calls[idx].function.name += tc.function.name;
+              }
+              if (tc.function?.arguments) {
+                assistantMsg.tool_calls[idx].function.arguments += tc.function.arguments;
+              }
             }
           }
-        } catch {}
+        } catch {
+          // Erro em evento SSE isolado não derruba a resposta
+        }
       }
     }
   }
 
-  // CORREÇÃO CRÍTICA: Remove tool_calls se estiver vazio para evitar erro 400 de provedores como Alibaba/OpenRouter
+  // Sanitização final do objeto gerado pelo assistente
+  if (Array.isArray(assistantMsg.tool_calls)) {
+    assistantMsg.tool_calls = assistantMsg.tool_calls.filter(Boolean);
+  }
+
   if (assistantMsg.tool_calls && assistantMsg.tool_calls.length === 0) {
     delete assistantMsg.tool_calls;
+  } else if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+    if (!assistantMsg.content) {
+      assistantMsg.content = null;
+    }
   }
 
   return assistantMsg;

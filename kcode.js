@@ -12,10 +12,11 @@ import { loadSkills, skillSystemPrompt } from './src/skills.js';
 async function fetchOpenRouterModels() {
   if (process.env.OPENROUTER_API_KEY === 'mock' || process.env.KCODE_SIMULATE === 'true') {
     return [
-      { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku', context_length: 200000, pricing: { prompt: '0.000001', completion: '0.000005' } },
-      { id: 'anthropic/claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', context_length: 200000, pricing: { prompt: '0.000003', completion: '0.000015' } },
-      { id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash Exp (Free)', context_length: 1048576, pricing: { prompt: '0', completion: '0' } },
-      { id: 'qwen/qwen-turbo:free', name: 'Qwen Turbo (Free)', context_length: 32768, pricing: { prompt: '0', completion: '0' } }
+      { id: 'qwen/qwen-2.5-coder-32b-instruct', name: 'Qwen 2.5 Coder 32B Instruct', context_length: 32768, pricing: { prompt: '0.0000002', completion: '0.0000002' } },
+      { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (Reasoning)', context_length: 65536, pricing: { prompt: '0.00000055', completion: '0.00000219' } },
+      { id: 'deepseek/deepseek-chat:free', name: 'DeepSeek V3 (Free)', context_length: 65536, pricing: { prompt: '0', completion: '0' } },
+      { id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B Instruct', context_length: 131072, pricing: { prompt: '0.00000035', completion: '0.0000004' } },
+      { id: 'mistralai/codestral-2501', name: 'Codestral 2501', context_length: 256000, pricing: { prompt: '0.0000003', completion: '0.0000009' } }
     ];
   }
   return new Promise((resolve, reject) => {
@@ -146,9 +147,9 @@ const SIMULATE = process.env.KCODE_SIMULATE === 'true';
 if (!API_KEY && !SIMULATE) { console.error('\n OPENROUTER_API_KEY nao definida no .env\n'); process.exit(1); }
 
 const MODELS = {
-  default: process.env.KCODE_MODEL || 'anthropic/claude-3.5-haiku',
-  strong: process.env.KCODE_MODEL_STRONG || '',
-  free: process.env.KCODE_MODEL_FREE || '',
+  default: process.env.KCODE_MODEL || 'qwen/qwen-2.5-coder-32b-instruct',
+  strong: process.env.KCODE_MODEL_STRONG || 'deepseek/deepseek-r1',
+  free: process.env.KCODE_MODEL_FREE || 'deepseek/deepseek-chat:free',
 };
 
 const HIST = path.join(os.homedir(), '.kcode', 'history');
@@ -158,15 +159,12 @@ let model = MODELS.default, messages = [], activeSkill = null;
 
 // ── Interactive selector ──────────────────────────────────────────────────────
 const CATEGORIES = [
-  { label: '★ FREE  — Modelos gratuitos', value: 'FREE' },
-  { label: '① Text  — Modelos de texto',   value: 'Text' },
-  { label: '② Image — Modelos de imagem',  value: 'Image' },
-  { label: '③ Embeddings',                 value: 'Embeddings' },
-  { label: '④ Audio',                      value: 'Audio' },
-  { label: '⑤ Video',                      value: 'Video' },
-  { label: '⑥ Rerank',                     value: 'Rerank' },
-  { label: '⑦ Speech',                     value: 'Speech' },
-  { label: '⑧ Transcription',              value: 'Transcription' },
+  { label: '★ OPEN SOURCE — Modelos abertos (Qwen, DeepSeek, Llama, Mistral)', value: 'OPENSOURCE' },
+  { label: '💻 CODING      — Modelos especializados em programação',           value: 'CODING' },
+  { label: '🆓 FREE        — Modelos gratuitos / com cota free',               value: 'FREE' },
+  { label: '① Text        — Modelos gerais de texto',                         value: 'Text' },
+  { label: '② Image       — Modelos de imagem / multimodais',                 value: 'Image' },
+  { label: '③ Audio/Speech',                                                   value: 'Audio' },
 ];
 
 function renderSelector(title, items, cursor, startIdx = 0, pageSize = 12) {
@@ -272,9 +270,12 @@ function header() {
 
 function help() {
   const cmds = [
-    ['/model', 'Navegue e escolha categoria + modelo (setas + Enter)'],
+    ['/model [nome|id]', 'Navegue e escolha categoria + modelo (setas + Enter)'],
     ['/skill [nome]', 'Ativa/desativa skill'],
     ['/skills', 'Lista skills disponiveis'],
+    ['/reversa', 'Ativa o framework Reversa para engenharia reversa'],
+    ['/memory [regra]', 'Exibe ou adiciona regras persistentes em MEMORY.md'],
+    ['/paste', 'Modo para colar bloco de código longo (termina com EOF)'],
     ['/files [dir]', 'Lista arquivos do projeto'],
     ['/run <cmd>', 'Roda comando local'],
     ['/status', 'Git status'],
@@ -302,6 +303,9 @@ const rl = readline.createInterface({
   prompt: '\n' + p('g', '❯') + ' '
 });
 
+let inPasteMode = false;
+let pasteBuffer = [];
+
 async function handleCmd(input) {
   const [cmd, ...args] = input.trim().split(/\s+/);
   if (cmd === '/help') { help(); return; }
@@ -323,7 +327,7 @@ async function handleCmd(input) {
       if (direct === 'default') {
         model = MODELS.default; header(); console.log(p('g', '  Modelo: ' + model)); return;
       }
-      // id direto (ex: /model anthropic/claude-3.5-haiku)
+      // id direto (ex: /model qwen/qwen-2.5-coder-32b-instruct)
       model = direct; header(); console.log(p('g', '  Modelo alterado para: ' + model)); return;
     }
 
@@ -340,9 +344,23 @@ async function handleCmd(input) {
       let filtered;
       if (cat.value === 'FREE') {
         filtered = allModels.filter(m => {
+          const isFreeId = (m.id || '').toLowerCase().includes(':free');
           const pIn  = parseFloat(m.pricing?.prompt     || '0');
           const pOut = parseFloat(m.pricing?.completion || '0');
-          return pIn === 0 && pOut === 0;
+          return isFreeId || (pIn === 0 && pOut === 0);
+        });
+      } else if (cat.value === 'OPENSOURCE') {
+        const openKeywords = ['qwen', 'deepseek', 'meta-llama', 'llama', 'mistral', 'gemma', 'phi-', 'nous', 'hermes', 'codestral', 'yi-'];
+        filtered = allModels.filter(m => {
+          const id = (m.id || '').toLowerCase();
+          return openKeywords.some(kw => id.includes(kw));
+        });
+      } else if (cat.value === 'CODING') {
+        const codeKeywords = ['coder', 'code', 'codestral', 'dev', 'program', 'sql', 'starcoder'];
+        filtered = allModels.filter(m => {
+          const id = (m.id || '').toLowerCase();
+          const desc = (m.description || '').toLowerCase();
+          return codeKeywords.some(kw => id.includes(kw) || desc.includes(kw));
         });
       } else {
         const sel = cat.value.toLowerCase();
@@ -495,6 +513,43 @@ async function handleCmd(input) {
     return;
   }
 
+  if (cmd === '/reversa') {
+    activeSkill = 'reversa';
+    header();
+    console.log(p('g', '  ✓ Framework Reversa ativado!\n'));
+    console.log(p('d', '  O Reversa documenta e analisa sistemas legados gerando especificações em .reversa/ e _reversa_sdd/.'));
+    console.log(p('d', '  Comandos sugeridos: "faça o scout do projeto", "mapeie a arquitetura", "documente os endpoints".\n'));
+    return;
+  }
+
+  if (cmd === '/memory') {
+    const memFile = path.join(cwd, 'MEMORY.md');
+    const rule = args.join(' ').trim();
+    if (!rule) {
+      if (fs.existsSync(memFile)) {
+        console.log(p('c', '\n  🧠 REGRAS EM MEMORY.md:\n'));
+        console.log(p('d', fs.readFileSync(memFile, 'utf8')) + '\n');
+      } else {
+        console.log(p('y', '\n  Nenhuma regra encontrada em MEMORY.md. Use: /memory <sua regra>\n'));
+      }
+      return;
+    }
+    const timestamp = new Date().toISOString().split('T')[0];
+    const entry = `- [${timestamp}] ${rule}\n`;
+    fs.appendFileSync(memFile, entry, 'utf8');
+    console.log(p('g', `\n  ✓ Regra adicionada ao MEMORY.md:`));
+    console.log(p('d', `    ${rule}\n`));
+    return;
+  }
+
+  if (cmd === '/paste') {
+    inPasteMode = true;
+    pasteBuffer = [];
+    console.log(p('y', '\n  📋 MODO COLAR ATIVADO'));
+    console.log(p('d', '  Cole seu texto/código abaixo. Para enviar, digite ') + p('g', 'EOF') + p('d', ' sozinho em uma linha e tecle Enter.\n'));
+    return;
+  }
+
   if (cmd === '/deploy') {
     const [site, env = 'staging'] = args;
     if (!site) { console.log(p('red', '  Uso: /deploy <site> [staging|production]')); return; }
@@ -509,8 +564,9 @@ async function handleCmd(input) {
   if (cmd === '/scan') {
     const file = args[0];
     if (!file) { console.log(p('red', '  Uso: /scan <arquivo>')); return; }
+    const scriptPath = path.join(__dirname, 'skills', 'security_analyzer.py');
     const { run_cmd } = await import('./src/tools/shell.js');
-    const r = run_cmd({ command: `python3 ~/kcode/skills/security_analyzer.py "${file}"`, cwd });
+    const r = run_cmd({ command: `python3 "${scriptPath}" "${file}"`, cwd });
     console.log('');
     if (r.stdout) process.stdout.write(r.stdout);
     if (r.stderr) console.log(p('red', r.stderr));
@@ -523,22 +579,56 @@ async function handleCmd(input) {
 
 async function chat(input) {
   messages.push({ role: 'user', content: input });
-  const sysExtra = activeSkill ? skillSystemPrompt(activeSkill, skills) : '';
+
+  // Injeção contextual persistente de MEMORY.md se existir
+  let memContext = '';
+  const memPath = path.join(cwd, 'MEMORY.md');
+  if (fs.existsSync(memPath)) {
+    try {
+      const memContent = fs.readFileSync(memPath, 'utf8').trim();
+      if (memContent) {
+        memContext = `\n\n--- REGRAS PERSISTENTES DO PROJETO (MEMORY.md) ---\n${memContent}\n--- FIM MEMORY.md ---`;
+      }
+    } catch {}
+  }
+  const sysExtra = (activeSkill ? skillSystemPrompt(activeSkill, skills) : '') + memContext;
+
+  let isThinking = false;
+  const onReasoning = (token) => {
+    if (!isThinking) {
+      isThinking = true;
+      process.stdout.write(p('d', '\n  💭 [Pensamento: '));
+    }
+    process.stdout.write(C.d + token + C.r);
+  };
+
+  const onToken = (token) => {
+    if (isThinking) {
+      isThinking = false;
+      process.stdout.write(p('d', ']\n\n') + p('c', '  kcode') + ' ');
+    }
+    process.stdout.write(token);
+  };
+
   let msg;
   try {
     process.stdout.write('\n' + p('c', '  kcode') + ' ');
-    msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken: t => process.stdout.write(t) });
+    msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken, onReasoning });
+    if (isThinking) {
+      process.stdout.write(p('d', ']\n'));
+    }
   } catch (e) {
     if (e.message.includes('402')) {
       console.log('\n' + p('red', '  Erro 402: Sem saldo ou limite atingido no OpenRouter.'));
       console.log(p('y', '  Dica: Modelos ":free" as vezes falham se o provedor estiver instavel.'));
-      console.log(p('y', '  Tente o modelo: qwen/qwen-turbo:free ou google/gemini-2.0-flash-exp:free'));
+      console.log(p('y', '  Tente o modelo: qwen/qwen-2.5-coder-32b-instruct ou deepseek/deepseek-chat:free'));
     } else {
       console.log('\n' + p('red', '  Erro: ' + e.message));
     }
     messages.pop();
     return;
   }
+
   if (!msg) {
     console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
     messages.pop();
@@ -546,7 +636,11 @@ async function chat(input) {
   }
   messages.push(msg);
 
-  while (msg && msg.tool_calls && msg.tool_calls.length > 0) {
+  let stepCount = 0;
+  const MAX_TOOL_STEPS = 15;
+
+  while (msg && msg.tool_calls && msg.tool_calls.length > 0 && stepCount < MAX_TOOL_STEPS) {
+    stepCount++;
     console.log('');
     const results = [];
     for (const tc of msg.tool_calls) {
@@ -556,22 +650,37 @@ async function chat(input) {
       console.log(p('y', '  ⚙ ' + name) + p('d', '(' + JSON.stringify(args).slice(0, 80) + ')'));
       const result = await executeTool(name, args);
       console.log(result.error ? p('red', '  ✗ ' + result.error) : p('g', '  ✓ OK'));
-      results.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result) });
+      results.push({ role: 'tool', tool_call_id: tc.id || `call_${Date.now()}`, content: JSON.stringify(result) });
     }
+
+    const previousLength = messages.length;
     messages.push(...results);
+
     try {
+      isThinking = false;
       process.stdout.write('\n' + p('c', '  kcode') + ' ');
-      msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken: t => process.stdout.write(t) });
+      msg = await runAgent({ messages, model, apiKey: API_KEY, systemExtra: sysExtra, onToken, onReasoning });
+      if (isThinking) {
+        process.stdout.write(p('d', ']\n'));
+      }
       if (!msg) {
         console.log('\n' + p('red', '  Erro: Resposta vazia da LLM.'));
+        messages.splice(previousLength);
         break;
       }
       messages.push(msg);
     } catch (e) {
       console.log('\n' + p('red', '  Erro: ' + e.message));
+      // Reverte mensagens de ferramenta não respondidas para evitar envenenar o histórico da sessão
+      messages.splice(previousLength);
       break;
     }
   }
+
+  if (stepCount >= MAX_TOOL_STEPS) {
+    console.log('\n' + p('y', '  ⚠️ Limite máximo de iterações de ferramentas atingido (15 passos).'));
+  }
+
   console.log('\n');
   save();
 }
@@ -602,10 +711,28 @@ if (SHOW_BALANCE) {
 
 rl.on('line', async line => {
   rl.pause();
-  const input = line.trim();
-  if (input) {
-    if (input.startsWith('/')) await handleCmd(input);
-    else await chat(input);
+  if (inPasteMode) {
+    if (line.trim() === 'EOF') {
+      inPasteMode = false;
+      const content = pasteBuffer.join('\n').trim();
+      pasteBuffer = [];
+      if (!content) {
+        console.log(p('y', '  Modo colar cancelado (conteúdo vazio).\n'));
+      } else {
+        console.log(p('g', `\n  ✓ Recebido bloco com ${content.split('\n').length} linhas. Enviando...\n`));
+        await chat(content);
+      }
+    } else {
+      pasteBuffer.push(line);
+      rl.resume();
+      return;
+    }
+  } else {
+    const input = line.trim();
+    if (input) {
+      if (input.startsWith('/')) await handleCmd(input);
+      else await chat(input);
+    }
   }
   rl.resume();
   rl.prompt();

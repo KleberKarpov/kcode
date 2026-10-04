@@ -29,6 +29,8 @@ export function loadSkills() {
   };
 
   loadFromDir(GLOBAL_SKILLS_DIR);
+  loadFromDir(path.join(process.cwd(), '.claude', 'skills'));
+  loadFromDir(path.join(process.cwd(), '.agents', 'skills'));
   loadFromDir(LOCAL_SKILLS_DIR);
 
   return skills;
